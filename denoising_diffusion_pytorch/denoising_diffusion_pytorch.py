@@ -90,12 +90,16 @@ def Upsample(dim, dim_out = None):
     return nn.Sequential(
         nn.Upsample(scale_factor = 2, mode = 'nearest'),
         nn.Conv2d(dim, default(dim_out, dim), 3, padding = 1)
+        # The layer takes an input of size dim and produces an output of size dim_out (or dim if dim_out is not provided). 
+        # The convolutional filter has a size of 3x3 and is applied with a padding of 1 to maintain the spatial dimensions of the input.
     )
 
 def Downsample(dim, dim_out = None):
     return nn.Sequential(
         Rearrange('b c (h p1) (w p2) -> b (c p1 p2) h w', p1 = 2, p2 = 2),
         nn.Conv2d(dim * 4, default(dim_out, dim), 1)
+        # The resulting layer will take an input of size dim and produce an output of size dim_out (or dim if dim_out is not provided). 
+        # The convolutional filter has a size of 1x1 and is applied with a padding of 0 to maintain the spatial dimensions of the input.
     )
 
 class RMSNorm(Module):
@@ -106,6 +110,8 @@ class RMSNorm(Module):
 
     def forward(self, x):
         return F.normalize(x, dim = 1) * self.g * self.scale
+        # when normalizing along the second dimension in the forward method of the RMSNorm module, 
+        # it is normalizing each channel independently.
 
 # sinusoidal positional embeds
 
@@ -114,14 +120,33 @@ class SinusoidalPosEmb(Module):
         super().__init__()
         self.dim = dim
         self.theta = theta
+        # x: Represents the position of a token in a sequence (e.g., 0, 1, 2, ...).
+        # dim: Represents the dimensionality of the positional embedding (e.g., 512).
+        # i (the locations in torch.arange in the below): Iterates over the embedding dimensions, from 0 to d_model/2 - 1.
+        # 2i: Ensures that we're dealing with even-indexed dimensions (sine function).
+        # 2i+1: Ensures that we're dealing with odd-indexed dimensions (cosine function).
 
     def forward(self, x):
         device = x.device
         half_dim = self.dim // 2
+        #  the dimensionality of the positional embedding. 
+        # It's a hyperparameter that determines the size of the positional encoding vector for each token in the sequence. 
+        # It's usually a power of 2, like 512 or 1024, for computational efficiency.
         emb = math.log(self.theta) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        # the interleaving version of sin and cos is the mainstream, but may not be so necesasry. 
+        # This is realted to the necessity of the cosine part. 
+        # To answer this question, we need to think a little about the caveats of using sine waves alone. 
+        # As can be imagined, for the position j=0 (a row in the table), we don’t want the row full of zeros. 
+        # Given that we are using sine waves that have many zero crossings, we might end up with rows full of zeros. 
+        # To avoid this, we need to interleave (or concatenate) the cosine waves. 
+        # Therefore the amplitude cosine becomes +1 or -1 whenever the amplitude of sine becomes zero.
+        # So, a simple concatenate will still do.
+        # The knowledges comes from 
+        # https://medium.com/@a.arun283/a-deeper-look-into-the-positional-encoding-method-in-transformer-architectures-7e98f32a925f
+        # https://medium.com/@pranay.janupalli/understanding-sinusoidal-positional-encoding-in-transformers-26c4c161b7cc
         return emb
 
 class RandomOrLearnedSinusoidalPosEmb(Module):
@@ -138,7 +163,7 @@ class RandomOrLearnedSinusoidalPosEmb(Module):
         x = rearrange(x, 'b -> b 1')
         freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * math.pi
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim = -1)
-        fouriered = torch.cat((x, fouriered), dim = -1)
+        fouriered = torch.cat((x, fouriered), dim = -1) # compared agains the previous class sinusoidalzpostEmb, there is one more extra column ahead of `x`.
         return fouriered
 
 # building block modules
@@ -163,6 +188,7 @@ class Block(Module):
         return self.dropout(x)
 
 class ResnetBlock(Module):
+    # there is also existing Resnet block in pytorch packagel.
     def __init__(self, dim, dim_out, *, time_emb_dim = None, dropout = 0.):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -234,6 +260,20 @@ class LinearAttention(Module):
         return self.to_out(out)
 
 class Attention(Module):
+    # The attention mechanism generates scores (often using a function of the inputs), 
+    # determining how much focus to place on each data part. 
+    # These scores are used to create a weighted sum of the inputs, 
+    # which feeds into the next network layer. 
+    # This allows the model to capture context and relationships within the data that might be missed with traditional, 
+    # fixed approaches to processing sequences.
+    # Please check: 
+    # https://medium.com/@sachinsoni600517/understanding-self-attention-in-transformers-ba06c57aed37
+
+    # for the cross-attention mechanism in the decoder (english2chinese translation)
+    # Q: Comes from the decoder's previous output (i.e., the partially generated Chinese sequence).
+    # K and V: Come from the encoder's output (i.e., the encoded English representation).
+
+
     def __init__(
         self,
         dim,
@@ -258,7 +298,7 @@ class Attention(Module):
 
         x = self.norm(x)
 
-        qkv = self.to_qkv(x).chunk(3, dim = 1)
+        qkv = self.to_qkv(x).chunk(3, dim = 1)  # .chunk means to split into three equal-sized chunks along the first dimension (dim = 1).
         q, k, v = map(lambda t: rearrange(t, 'b (h c) x y -> b h (x y) c', h = self.heads), qkv)
 
         mk, mv = map(lambda t: repeat(t, 'h n d -> b h n d', b = b), self.mem_kv)
@@ -268,6 +308,8 @@ class Attention(Module):
 
         out = rearrange(out, 'b h (x y) d -> b (h d) x y', x = h, y = w)
         return self.to_out(out)
+
+######### another implementation of attention can be found in https://medium.com/@wangdk93/implement-self-attention-and-cross-attention-in-pytorch-1f1a366c9d4b
 
 # model
 
